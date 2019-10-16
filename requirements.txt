@@ -1,5 +1,4 @@
-branca
-jinja2
+branca>=0.3.0
+jinja2>=2.9
 numpy
 requests
-six

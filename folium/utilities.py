@@ -1,90 +1,109 @@
-from __future__ import (absolute_import, division, print_function)
-
 import base64
 import io
 import json
 import math
 import os
 import struct
+import tempfile
 import zlib
+from contextlib import contextmanager
+import copy
+import uuid
+import collections
+from urllib.parse import urlparse, uses_netloc, uses_params, uses_relative
 
 import numpy as np
-
-from six import binary_type, text_type
-
-
 try:
-    from urllib.parse import uses_relative, uses_netloc, uses_params, urlparse
+    import pandas as pd
 except ImportError:
-    from urlparse import uses_relative, uses_netloc, uses_params, urlparse
+    pd = None
 
 
 _VALID_URLS = set(uses_relative + uses_netloc + uses_params)
 _VALID_URLS.discard('')
 
 
-def _validate_location(location):
-    """Validates and formats location values before setting."""
-    if _isnan(location):
-        raise ValueError('Location values cannot contain NaNs, '
-                         'got {!r}'.format(location))
-    if type(location) not in [list, tuple]:
-        raise TypeError('Expected tuple/list for location, got '
-                        '{!r}'.format(location))
+def validate_location(location):  # noqa: C901
+    """Validate a single lat/lon coordinate pair and convert to a list
 
+    Validate that location:
+    * is a sized variable
+    * with size 2
+    * allows indexing (i.e. has an ordering)
+    * where both values are floats (or convertible to float)
+    * and both values are not NaN
+
+    Returns
+    -------
+    list[float, float]
+
+    """
+    if isinstance(location, np.ndarray) \
+            or (pd is not None and isinstance(location, pd.DataFrame)):
+        location = np.squeeze(location).tolist()
+    if not hasattr(location, '__len__'):
+        raise TypeError('Location should be a sized variable, '
+                        'for example a list or a tuple, instead got '
+                        '{!r} of type {}.'.format(location, type(location)))
     if len(location) != 2:
-        raise ValueError('Expected two values for location [lat, lon], '
-                         'got {}'.format(len(location)))
-    location = _locations_tolist(location)
-    return location
+        raise ValueError('Expected two (lat, lon) values for location, '
+                         'instead got: {!r}.'.format(location))
+    try:
+        coords = (location[0], location[1])
+    except (TypeError, KeyError):
+        raise TypeError('Location should support indexing, like a list or '
+                        'a tuple does, instead got {!r} of type {}.'
+                        .format(location, type(location)))
+    for coord in coords:
+        try:
+            float(coord)
+        except (TypeError, ValueError):
+            raise ValueError('Location should consist of two numerical values, '
+                             'but {!r} of type {} is not convertible to float.'
+                             .format(coord, type(coord)))
+        if math.isnan(float(coord)):
+            raise ValueError('Location values cannot contain NaNs.')
+    return [float(x) for x in coords]
 
 
-def _validate_coordinates(coordinates):
-    """Validates multiple coordinates for the various markers in folium."""
-    if _isnan(coordinates):
-        raise ValueError('Location values cannot contain NaNs, '
-                         'got:\n{!r}'.format(coordinates))
-    coordinates = _locations_tolist(coordinates)
-    return coordinates
+def validate_locations(locations):
+    """Validate an iterable with multiple lat/lon coordinate pairs.
 
+    Returns
+    -------
+    list[list[float, float]] or list[list[list[float, float]]]
 
-def _locations_tolist(x):
-    """Transforms recursively a list of iterables into a list of list."""
-    if hasattr(x, '__iter__'):
-        return list(map(_locations_tolist, x))
+    """
+    locations = if_pandas_df_convert_to_numpy(locations)
+    try:
+        iter(locations)
+    except TypeError:
+        raise TypeError('Locations should be an iterable with coordinate pairs,'
+                        ' but instead got {!r}.'.format(locations))
+    try:
+        next(iter(locations))
+    except StopIteration:
+        raise ValueError('Locations is empty.')
+    try:
+        float(next(iter(next(iter(next(iter(locations)))))))
+    except (TypeError, StopIteration):
+        # locations is a list of coordinate pairs
+        return [validate_location(coord_pair) for coord_pair in locations]
     else:
-        return x
+        # locations is a list of a list of coordinate pairs, recurse
+        return [validate_locations(lst) for lst in locations]
 
 
-def _flatten(container):
-    for i in container:
-        if isinstance(i, (list, tuple, np.ndarray)):
-            for j in _flatten(i):
-                yield j
-        else:
-            yield i
+def if_pandas_df_convert_to_numpy(obj):
+    """Return a Numpy array from a Pandas dataframe.
 
-
-def _isnan(values):
-    """Check if there are NaNs values in the iterable."""
-    return any(math.isnan(value) for value in _flatten(values))
-
-
-def _parse_wms(**kw):
+    Iterating over a DataFrame has weird side effects, such as the first
+    row being the column names. Converting to Numpy is more safe.
     """
-    Parse leaflet TileLayer.WMS options.
-    http://leafletjs.com/reference-1.2.0.html#tilelayer-wms
-
-    """
-    return {
-        'layers': kw.pop('layers', ''),
-        'styles': kw.pop('styles', ''),
-        'format': kw.pop('fmt', 'image/jpeg'),
-        'transparent': kw.pop('transparent', False),
-        'version': kw.pop('version', '1.1.1'),
-        'crs': kw.pop('crs', None),
-        'uppercase': kw.pop('uppercase', False),
-    }
+    if pd is not None and isinstance(obj, pd.DataFrame):
+        return obj.values
+    else:
+        return obj
 
 
 def image_to_url(image, colormap=None, origin='upper'):
@@ -109,7 +128,7 @@ def image_to_url(image, colormap=None, origin='upper'):
         0. and 1.  You can use colormaps from `matplotlib.cm`.
 
     """
-    if isinstance(image, (text_type, binary_type)) and not _is_url(image):
+    if isinstance(image, str) and not _is_url(image):
         fileformat = os.path.splitext(image)[-1][1:]
         with io.open(image, 'rb') as f:
             img = f.read()
@@ -129,7 +148,7 @@ def _is_url(url):
     """Check to see if `url` has a valid protocol."""
     try:
         return urlparse(url).scheme in _VALID_URLS
-    except:
+    except Exception:
         return False
 
 
@@ -173,8 +192,8 @@ def write_png(data, origin='upper', colormap=None):
     height, width, nblayers = arr.shape
 
     if nblayers not in [1, 3, 4]:
-            raise ValueError('Data must be NxM (mono), '
-                             'NxMx3 (RGB), or NxMx4 (RGBA)')
+        raise ValueError('Data must be NxM (mono), '
+                         'NxMx3 (RGB), or NxMx4 (RGBA)')
     assert arr.shape == (height, width, nblayers)
 
     if nblayers == 1:
@@ -208,10 +227,10 @@ def write_png(data, origin='upper', colormap=None):
                          for i in range(height)])
 
     def png_pack(png_tag, data):
-            chunk_head = png_tag + data
-            return (struct.pack('!I', len(data)) +
-                    chunk_head +
-                    struct.pack('!I', 0xFFFFFFFF & zlib.crc32(chunk_head)))
+        chunk_head = png_tag + data
+        return (struct.pack('!I', len(data)) +
+                chunk_head +
+                struct.pack('!I', 0xFFFFFFFF & zlib.crc32(chunk_head)))
 
     return b''.join([
         b'\x89PNG\r\n\x1a\n',
@@ -359,3 +378,115 @@ def get_bounds(locations, lonlat=False):
     if lonlat:
         bounds = _locations_mirror(bounds)
     return bounds
+
+
+def camelize(key):
+    """Convert a python_style_variable_name to lowerCamelCase.
+
+    Examples
+    --------
+    >>> camelize('variable_name')
+    'variableName'
+    >>> camelize('variableName')
+    'variableName'
+    """
+    return ''.join(x.capitalize() if i > 0 else x
+                   for i, x in enumerate(key.split('_')))
+
+
+def _parse_size(value):
+    try:
+        if isinstance(value, (int, float)):
+            value_type = 'px'
+            value = float(value)
+            assert value > 0
+        else:
+            value_type = '%'
+            value = float(value.strip('%'))
+            assert 0 <= value <= 100
+    except Exception:
+        msg = 'Cannot parse value {!r} as {!r}'.format
+        raise ValueError(msg(value, value_type))
+    return value, value_type
+
+
+def iter_points(x):
+    """Iterates over a list representing a feature, and returns a list of points,
+    whatever the shape of the array (Point, MultiPolyline, etc).
+    """
+    if not isinstance(x, (list, tuple)):
+        raise ValueError('List/tuple type expected. Got {!r}.'.format(x))
+    if len(x):
+        if isinstance(x[0], (list, tuple)):
+            out = []
+            for y in x:
+                out += iter_points(y)
+            return out
+        else:
+            return [x]
+    else:
+        return []
+
+
+def compare_rendered(obj1, obj2):
+    """
+    Return True/False if the normalized rendered version of
+    two folium map objects are the equal or not.
+
+    """
+    return normalize(obj1) == normalize(obj2)
+
+
+def normalize(rendered):
+    """Return the input string without non-functional spaces or newlines."""
+    out = ''.join([line.strip()
+                   for line in rendered.splitlines()
+                   if line.strip()])
+    out = out.replace(', ', ',')
+    return out
+
+
+@contextmanager
+def _tmp_html(data):
+    """Yields the path of a temporary HTML file containing data."""
+    filepath = ''
+    try:
+        fid, filepath = tempfile.mkstemp(suffix='.html', prefix='folium_')
+        os.write(fid, data.encode('utf8'))
+        os.close(fid)
+        yield filepath
+    finally:
+        if os.path.isfile(filepath):
+            os.remove(filepath)
+
+
+def deep_copy(item_original):
+    """Return a recursive deep-copy of item where each copy has a new ID."""
+    item = copy.copy(item_original)
+    item._id = uuid.uuid4().hex
+    if hasattr(item, '_children') and len(item._children) > 0:
+        children_new = collections.OrderedDict()
+        for subitem_original in item._children.values():
+            subitem = deep_copy(subitem_original)
+            subitem._parent = item
+            children_new[subitem.get_name()] = subitem
+        item._children = children_new
+    return item
+
+
+def get_obj_in_upper_tree(element, cls):
+    """Return the first object in the parent tree of class `cls`."""
+    if not hasattr(element, '_parent'):
+        raise ValueError('The top of the tree was reached without finding a {}'
+                         .format(cls))
+    parent = element._parent
+    if not isinstance(parent, cls):
+        return get_obj_in_upper_tree(parent, cls)
+    return parent
+
+
+def parse_options(**kwargs):
+    """Return a dict with lower-camelcase keys and non-None values.."""
+    return {camelize(key): value
+            for key, value in kwargs.items()
+            if value is not None}

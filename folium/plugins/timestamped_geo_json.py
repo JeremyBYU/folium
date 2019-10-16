@@ -1,11 +1,11 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import (absolute_import, division, print_function)
-
 import json
 
 from branca.element import CssLink, Figure, JavascriptLink, MacroElement
-from branca.utilities import iter_points, none_max, none_min
+
+from folium.folium import Map
+from folium.utilities import iter_points, none_max, none_min, parse_options
 
 from jinja2 import Template
 
@@ -16,18 +16,26 @@ class TimestampedGeoJson(MacroElement):
     into a map with Map.add_child.
 
     A geo-json is timestamped if:
-    * it contains only features of types LineString, MultiPoint, MultiLineString and MultiPolygon.
-    * each feature has a 'times' property with the same length as the coordinates array.
-    * each element of each 'times' property is a timestamp in ms since epoch, or in ISO string.
 
-    Eventually, you may have Point features with a 'times' property being an array of length 1.
+    * it contains only features of types LineString, MultiPoint, MultiLineString,
+      Polygon and MultiPolygon.
+    * each feature has a 'times' property with the same length as the
+      coordinates array.
+    * each element of each 'times' property is a timestamp in ms since epoch,
+      or in ISO string.
+
+    Eventually, you may have Point features with a 'times' property being an
+    array of length 1.
 
     Parameters
     ----------
     data: file, dict or str.
         The timestamped geo-json data you want to plot.
-        * If file, then data will be read in the file and fully embedded in Leaflet's javascript.
-        * If dict, then data will be converted to json and embedded in the javascript.
+
+        * If file, then data will be read in the file and fully embedded in
+          Leaflet's javascript.
+        * If dict, then data will be converted to json and embedded in the
+          javascript.
         * If str, then data will be passed to the javascript as-is.
     transition_time: int, default 200.
         The duration in ms of a transition from between timestamps.
@@ -40,7 +48,12 @@ class TimestampedGeoJson(MacroElement):
     period: str, default "P1D"
         Used to construct the array of available times starting
         from the first available time. Format: ISO8601 Duration
-        ex: 'P1M' -> 1/month, 'P1D' -> 1/day, 'PT1H' -> 1/hour, and'PT1M' -> 1/minute
+        ex: 'P1M' 1/month, 'P1D' 1/day, 'PT1H' 1/hour, and 'PT1M' 1/minute
+    duration: str, default None
+        Period of time which the features will be shown on the map after their
+        time has passed. If None, all previous times will be shown.
+        Format: ISO8601 Duration
+        ex: 'P1M' 1/month, 'P1D' 1/day, 'PT1H' 1/hour, and 'PT1M' 1/minute
 
     Examples
     --------
@@ -63,41 +76,7 @@ class TimestampedGeoJson(MacroElement):
     See https://github.com/socib/Leaflet.TimeDimension for more information.
 
     """
-    def __init__(self, data, transition_time=200, loop=True, auto_play=True, add_last_point=True,
-                 period='P1D', min_speed=0.1, max_speed=10, loop_button=False,
-                 date_options='YYYY/MM/DD hh:mm:ss', time_slider_drag_update=False):
-        super(TimestampedGeoJson, self).__init__()
-        self._name = 'TimestampedGeoJson'
-
-        if 'read' in dir(data):
-            self.embed = True
-            self.data = data.read()
-        elif type(data) is dict:
-            self.embed = True
-            self.data = json.dumps(data)
-        else:
-            self.embed = False
-            self.data = data
-        self.add_last_point = bool(add_last_point)
-        self.period = period
-        self.date_options = date_options
-
-        options = {
-            'position': 'bottomleft',
-            'minSpeed': min_speed,
-            'maxSpeed': max_speed,
-            'autoPlay': auto_play,
-            'loopButton': loop_button,
-            'timeSliderDragUpdate': time_slider_drag_update,
-            'playerOptions': {
-                'transitionTime': int(transition_time),
-                'loop': loop,
-                'startOver': True
-            }
-        }
-        self.options = json.dumps(options, sort_keys=True, indent=2)
-
-        self._template = Template("""
+    _template = Template("""
         {% macro script(this, kwargs) %}
             L.Control.TimeDimensionCustom = L.Control.TimeDimension.extend({
                 _getDisplayDateFormat: function(date){
@@ -106,11 +85,15 @@ class TimestampedGeoJson(MacroElement):
                     return newdate.format("{{this.date_options}}");
                 }
             });
-            {{this._parent.get_name()}}.timeDimension = L.timeDimension({period:"{{this.period}}"});
-            var timeDimensionControl = new L.Control.TimeDimensionCustom({{ this.options }});
+            {{this._parent.get_name()}}.timeDimension = L.timeDimension(
+                {
+                    period: {{ this.period|tojson }},
+                }
+            );
+            var timeDimensionControl = new L.Control.TimeDimensionCustom(
+                {{ this.options|tojson }}
+            );
             {{this._parent.get_name()}}.addControl(this.timeDimensionControl);
-
-            console.log("{{this.marker}}");
 
             var geoJsonLayer = L.geoJson({{this.data}}, {
                     pointToLayer: function (feature, latLng) {
@@ -143,13 +126,56 @@ class TimestampedGeoJson(MacroElement):
                     }
                 })
 
-            var {{this.get_name()}} = L.timeDimension.layer.geoJson(geoJsonLayer,
-                {updateTimeDimension: true,addlastPoint: {{'true' if this.add_last_point else 'false'}}}
-                ).addTo({{this._parent.get_name()}});
+            var {{this.get_name()}} = L.timeDimension.layer.geoJson(
+                geoJsonLayer,
+                {
+                    updateTimeDimension: true,
+                    addlastPoint: {{ this.add_last_point|tojson }},
+                    duration: {{ this.duration }},
+                }
+            ).addTo({{this._parent.get_name()}});
         {% endmacro %}
         """)  # noqa
 
+    def __init__(self, data, transition_time=200, loop=True, auto_play=True,
+                 add_last_point=True, period='P1D', min_speed=0.1, max_speed=10,
+                 loop_button=False, date_options='YYYY-MM-DD HH:mm:ss',
+                 time_slider_drag_update=False, duration=None):
+        super(TimestampedGeoJson, self).__init__()
+        self._name = 'TimestampedGeoJson'
+
+        if 'read' in dir(data):
+            self.embed = True
+            self.data = data.read()
+        elif type(data) is dict:
+            self.embed = True
+            self.data = json.dumps(data)
+        else:
+            self.embed = False
+            self.data = data
+        self.add_last_point = bool(add_last_point)
+        self.period = period
+        self.date_options = date_options
+        self.duration = 'undefined' if duration is None else '"' + duration + '"'
+
+        self.options = parse_options(
+            position='bottomleft',
+            min_speed=min_speed,
+            max_speed=max_speed,
+            auto_play=auto_play,
+            loop_button=loop_button,
+            time_slider_drag_update=time_slider_drag_update,
+            player_options={
+                'transitionTime': int(transition_time),
+                'loop': loop,
+                'startOver': True
+            },
+        )
+
     def render(self, **kwargs):
+        assert isinstance(self._parent, Map), (
+            'TimestampedGeoJson can only be added to a Map object.'
+        )
         super(TimestampedGeoJson, self).render()
 
         figure = self.get_root()
@@ -165,11 +191,11 @@ class TimestampedGeoJson(MacroElement):
             name='jqueryui1.10.2')
 
         figure.header.add_child(
-            JavascriptLink('https://rawgit.com/nezasa/iso8601-js-period/master/iso8601.min.js'),  # noqa
+            JavascriptLink('https://rawcdn.githack.com/nezasa/iso8601-js-period/master/iso8601.min.js'),  # noqa
             name='iso8601')
 
         figure.header.add_child(
-            JavascriptLink('https://rawgit.com/socib/Leaflet.TimeDimension/master/dist/leaflet.timedimension.min.js'),  # noqa
+            JavascriptLink('https://rawcdn.githack.com/socib/Leaflet.TimeDimension/master/dist/leaflet.timedimension.min.js'),  # noqa
             name='leaflet.timedimension')
 
         figure.header.add_child(
@@ -177,7 +203,7 @@ class TimestampedGeoJson(MacroElement):
             name='highlight.js_css')
 
         figure.header.add_child(
-            CssLink("http://apps.socib.es/Leaflet.TimeDimension/dist/leaflet.timedimension.control.min.css"),  # noqa
+            CssLink("https://rawcdn.githack.com/socib/Leaflet.TimeDimension/master/dist/leaflet.timedimension.control.min.css"),  # noqa
             name='leaflet.timedimension_css')
 
         figure.header.add_child(

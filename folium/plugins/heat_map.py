@@ -1,16 +1,19 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import (absolute_import, division, print_function)
-
-import json
-
 from branca.element import Figure, JavascriptLink
-from branca.utilities import none_max, none_min
 
 from folium.map import Layer
-from folium.utilities import _isnan
+from folium.utilities import (
+    none_max,
+    none_min,
+    parse_options,
+    if_pandas_df_convert_to_numpy,
+    validate_location,
+)
 
 from jinja2 import Template
+
+import numpy as np
 
 
 class HeatMap(Layer):
@@ -44,39 +47,35 @@ class HeatMap(Layer):
     show: bool, default True
         Whether the layer will be shown on opening (only for overlays).
     """
-    def __init__(self, data, name=None, min_opacity=0.5, max_zoom=18,
-                 max_val=1.0, radius=25, blur=15, gradient=None,
-                 overlay=True, control=True, show=True):
-        super(HeatMap, self).__init__(name=name, overlay=overlay,
-                                      control=control, show=show)
-        if _isnan(data):
-            raise ValueError('data cannot contain NaNs, '
-                             'got:\n{!r}'.format(data))
-        self._name = 'HeatMap'
-        self.data = [[x for x in line] for line in data]
-        self.min_opacity = min_opacity
-        self.max_zoom = max_zoom
-        self.max_val = max_val
-        self.radius = radius
-        self.blur = blur
-        self.gradient = (json.dumps(gradient, sort_keys=True) if
-                         gradient is not None else 'null')
-
-        self._template = Template(u"""
+    _template = Template(u"""
         {% macro script(this, kwargs) %}
-            var {{this.get_name()}} = L.heatLayer(
-                {{this.data}},
-                {
-                    minOpacity: {{this.min_opacity}},
-                    maxZoom: {{this.max_zoom}},
-                    max: {{this.max_val}},
-                    radius: {{this.radius}},
-                    blur: {{this.blur}},
-                    gradient: {{this.gradient}}
-                    })
-                .addTo({{this._parent.get_name()}});
+            var {{ this.get_name() }} = L.heatLayer(
+                {{ this.data|tojson }},
+                {{ this.options|tojson }}
+            ).addTo({{ this._parent.get_name() }});
         {% endmacro %}
         """)
+
+    def __init__(self, data, name=None, min_opacity=0.5, max_zoom=18,
+                 max_val=1.0, radius=25, blur=15, gradient=None,
+                 overlay=True, control=True, show=True, **kwargs):
+        super(HeatMap, self).__init__(name=name, overlay=overlay,
+                                      control=control, show=show)
+        self._name = 'HeatMap'
+        data = if_pandas_df_convert_to_numpy(data)
+        self.data = [[*validate_location(line[:2]), *line[2:]]  # noqa: E999
+                     for line in data]
+        if np.any(np.isnan(self.data)):
+            raise ValueError('data may not contain NaNs.')
+        self.options = parse_options(
+            min_opacity=min_opacity,
+            max_zoom=max_zoom,
+            max=max_val,
+            radius=radius,
+            blur=blur,
+            gradient=gradient,
+            **kwargs
+        )
 
     def render(self, **kwargs):
         super(HeatMap, self).render(**kwargs)

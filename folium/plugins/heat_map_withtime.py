@@ -1,9 +1,9 @@
 # -*- coding: utf-8 -*-
 
 from branca.element import CssLink, Element, Figure, JavascriptLink
-from branca.utilities import none_max, none_min
 
 from folium.map import Layer
+from folium.utilities import none_max, none_min
 
 from jinja2 import Template
 
@@ -16,7 +16,8 @@ class HeatMapWithTime(Layer):
     ----------
     data: list of list of points of the form [lat, lng] or [lat, lng, weight]
         The points you want to plot. The outer list corresponds to the various time
-        steps in sequential order. (weight defaults to 1 if not specified for a point)
+        steps in sequential order. (weight is in (0, 1] range and defaults to 1 if
+        not specified for a point)
     index: Index giving the label (or timestamp) of the elements of data. Should have
         the same length as data, or is replaced by a simple count if not specified.
     name : string, default None
@@ -29,6 +30,9 @@ class HeatMapWithTime(Layer):
         The maximum opacity for the heatmap.
     scale_radius: default False
         Scale the radius of the points based on the zoom level.
+    gradient: dict, default None
+        Match point density values to colors. Color can be a name ('red'),
+        RGB values ('rgb(255,0,0)') or a hex number ('#FF0000').
     use_local_extrema: default False
         Defines whether the heatmap uses a global extrema set found from the input data
         OR a local extrema (the maximum and minimum of the currently displayed view).
@@ -54,54 +58,7 @@ class HeatMapWithTime(Layer):
         Whether the layer will be shown on opening (only for overlays).
 
     """
-    def __init__(self, data, index=None, name=None, radius=15, min_opacity=0,
-                 max_opacity=0.6, scale_radius=False, use_local_extrema=False,
-                 auto_play=False, display_index=True, index_steps=1,
-                 min_speed=0.1, max_speed=10, speed_step=0.1,
-                 position='bottomleft', overlay=True, control=True, show=True):
-        super(HeatMapWithTime, self).__init__(name=name, overlay=overlay,
-                                              control=control, show=show)
-        self._name = 'HeatMap'
-        self._control_name = self.get_name() + 'Control'
-
-        # Input data.
-        self.data = data
-        self.index = index if index is not None else [str(i) for i in
-                                                      range(1, len(data)+1)]
-        if len(self.data) != len(self.index):
-            raise ValueError('Input data and index are not of compatible lengths.')  # noqa
-        self.times = list(range(1, len(data)+1))
-
-        # Heatmap settings.
-        self.radius = radius
-        self.min_opacity = min_opacity
-        self.max_opacity = max_opacity
-        self.scale_radius = 'true' if scale_radius else 'false'
-        self.use_local_extrema = 'true' if use_local_extrema else 'false'
-
-        # Time dimension settings.
-        self.auto_play = 'true' if auto_play else 'false'
-        self.display_index = 'true' if display_index else 'false'
-        self.min_speed = min_speed
-        self.max_speed = max_speed
-        self.position = position
-        self.speed_step = speed_step
-        self.index_steps = index_steps
-
-        # Hard coded defaults for simplicity.
-        self.backward_button = 'true'
-        self.forward_button = 'true'
-        self.limit_sliders = 'true'
-        self.limit_minimum_range = 5
-        self.loop_button = 'true'
-        self.speed_slider = 'true'
-        self.time_slider = 'true'
-        self.play_button = 'true'
-        self.play_reverse_button = 'true'
-        self.time_slider_drap_update = 'false'
-        self.style_NS = 'leaflet-control-timecontrol'
-
-        self._template = Template(u"""
+    _template = Template(u"""
         {% macro script(this, kwargs) %}
 
             var times = {{this.times}};
@@ -139,13 +96,63 @@ class HeatMapWithTime(Layer):
                         maxOpacity: {{this.max_opacity}},
                         scaleRadius: {{this.scale_radius}},
                         useLocalExtrema: {{this.use_local_extrema}},
-                        defaultWeight: 1 ,
+                        defaultWeight: 1,
+                        {% if this.gradient %}gradient: {{ this.gradient }}{% endif %}
                     }
                 })
                 .addTo({{this._parent.get_name()}});
 
         {% endmacro %}
         """)
+
+    def __init__(self, data, index=None, name=None, radius=15, min_opacity=0,
+                 max_opacity=0.6, scale_radius=False, gradient=None,
+                 use_local_extrema=False, auto_play=False,
+                 display_index=True, index_steps=1, min_speed=0.1,
+                 max_speed=10, speed_step=0.1, position='bottomleft',
+                 overlay=True, control=True, show=True):
+        super(HeatMapWithTime, self).__init__(name=name, overlay=overlay,
+                                              control=control, show=show)
+        self._name = 'HeatMap'
+        self._control_name = self.get_name() + 'Control'
+
+        # Input data.
+        self.data = data
+        self.index = index if index is not None else [str(i) for i in
+                                                      range(1, len(data)+1)]
+        if len(self.data) != len(self.index):
+            raise ValueError('Input data and index are not of compatible lengths.')  # noqa
+        self.times = list(range(1, len(data)+1))
+
+        # Heatmap settings.
+        self.radius = radius
+        self.min_opacity = min_opacity
+        self.max_opacity = max_opacity
+        self.scale_radius = 'true' if scale_radius else 'false'
+        self.use_local_extrema = 'true' if use_local_extrema else 'false'
+        self.gradient = gradient
+
+        # Time dimension settings.
+        self.auto_play = 'true' if auto_play else 'false'
+        self.display_index = 'true' if display_index else 'false'
+        self.min_speed = min_speed
+        self.max_speed = max_speed
+        self.position = position
+        self.speed_step = speed_step
+        self.index_steps = index_steps
+
+        # Hard coded defaults for simplicity.
+        self.backward_button = 'true'
+        self.forward_button = 'true'
+        self.limit_sliders = 'true'
+        self.limit_minimum_range = 5
+        self.loop_button = 'true'
+        self.speed_slider = 'true'
+        self.time_slider = 'true'
+        self.play_button = 'true'
+        self.play_reverse_button = 'true'
+        self.time_slider_drap_update = 'false'
+        self.style_NS = 'leaflet-control-timecontrol'
 
     def render(self, **kwargs):
         super(HeatMapWithTime, self).render(**kwargs)
@@ -155,16 +162,16 @@ class HeatMapWithTime(Layer):
                                             'if it is not in a Figure.')
 
         figure.header.add_child(
-            JavascriptLink('https://rawgit.com/socib/Leaflet.TimeDimension/master/dist/leaflet.timedimension.min.js'),  # noqa
+            JavascriptLink('https://rawcdn.githack.com/socib/Leaflet.TimeDimension/master/dist/leaflet.timedimension.min.js'),  # noqa
             name='leaflet.timedimension.min.js')
 
         figure.header.add_child(
             JavascriptLink(
-                'https://cdnjs.cloudflare.com/ajax/libs/heatmap.js/2.0.2/heatmap.min.js'),
+                'https://rawcdn.githack.com/python-visualization/folium/master/folium/templates/pa7_hm.min.js'),  # noqa
             name='heatmap.min.js')
 
         figure.header.add_child(
-            JavascriptLink('https://rawgit.com/pa7/heatmap.js/develop/plugins/leaflet-heatmap/leaflet-heatmap.js'),  # noqa
+            JavascriptLink('https://rawcdn.githack.com/pa7/heatmap.js/develop/plugins/leaflet-heatmap/leaflet-heatmap.js'),  # noqa
             name='leaflet-heatmap.js')
 
         figure.header.add_child(

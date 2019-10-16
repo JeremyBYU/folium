@@ -1,10 +1,9 @@
 # -*- coding: utf-8 -*-
 
-from __future__ import (absolute_import, division, print_function)
-
 from branca.element import CssLink, Figure, JavascriptLink
 
-from folium.map import Icon, Layer, Marker, Popup
+from folium.map import Layer, Marker
+from folium.utilities import validate_locations, parse_options
 
 from jinja2 import Template
 
@@ -15,6 +14,12 @@ class MarkerCluster(Layer):
 
     Parameters
     ----------
+    locations: list of list or array of shape (n, 2).
+        Data points of the form [[lat, lng]].
+    popups: list of length n, default None
+        Popup for each marker, either a Popup object or a string or None.
+    icons: list of length n, default None
+        Icon for each marker, either an Icon object or a string or None.
     name : string, default None
         The name of the Layer, as it will appear in LayerControls
     overlay : bool, default True
@@ -26,52 +31,54 @@ class MarkerCluster(Layer):
     icon_create_function : string, default None
         Override the default behaviour, making possible to customize
         markers colors and sizes.
-
-    locations: list of list or array of shape (n, 2).
-        Data points of the form [[lat, lng]].
-    popups: list of length n.
-        Popup for each marker.
-    icons: list of length n.
-        Icon for each marker.
+    options : dict, default None
+        A dictionary with options for Leaflet.markercluster. See
+        https://github.com/Leaflet/Leaflet.markercluster for options.
 
     Example
     -------
     >>> icon_create_function = '''
-    ...    function(cluster) {
-    ...    return L.divIcon({html: '<b>' + cluster.getChildCount() + '</b>',
-    ...                      className: 'marker-cluster marker-cluster-small',
-    ...                      iconSize: new L.Point(20, 20)});
-    }'''
+    ...     function(cluster) {
+    ...     return L.divIcon({html: '<b>' + cluster.getChildCount() + '</b>',
+    ...                       className: 'marker-cluster marker-cluster-small',
+    ...                       iconSize: new L.Point(20, 20)});
+    ...     }
+    ... '''
 
     """
+    _template = Template(u"""
+        {% macro script(this, kwargs) %}
+            var {{ this.get_name() }} = L.markerClusterGroup(
+                {{ this.options|tojson }}
+            );
+            {%- if this.icon_create_function is not none %}
+            {{ this.get_name() }}.options.iconCreateFunction =
+                {{ this.icon_create_function.strip() }};
+            {%- endif %}
+            {{ this._parent.get_name() }}.addLayer({{ this.get_name() }});
+        {% endmacro %}
+        """)
+
     def __init__(self, locations=None, popups=None, icons=None, name=None,
                  overlay=True, control=True, show=True,
-                 icon_create_function=None):
+                 icon_create_function=None, options=None, **kwargs):
+        if options is not None:
+            kwargs.update(options)  # options argument is legacy
         super(MarkerCluster, self).__init__(name=name, overlay=overlay,
                                             control=control, show=show)
+        self._name = 'MarkerCluster'
 
         if locations is not None:
-            if popups is None:
-                popups = [None]*len(locations)
-            if icons is None:
-                icons = [None]*len(locations)
-            for location, popup, icon in zip(locations, popups, icons):
-                p = popup if popup is None or isinstance(popup, Popup) else Popup(popup)  # noqa
-                i = icon if icon is None or isinstance(icon, Icon) else Icon(icon)  # noqa
-                self.add_child(Marker(location, popup=p, icon=i))
+            locations = validate_locations(locations)
+            for i, location in enumerate(locations):
+                self.add_child(Marker(location,
+                                      popup=popups and popups[i],
+                                      icon=icons and icons[i]))
 
-        self._name = 'MarkerCluster'
-        self._icon_create_function = icon_create_function.strip() if icon_create_function else ''  # noqa
-        self._template = Template(u"""
-            {% macro script(this, kwargs) %}
-            var {{this.get_name()}} = L.markerClusterGroup({
-                {% if this._icon_create_function %}
-                   iconCreateFunction: {{this._icon_create_function}}
-                {% endif %}
-            });
-            {{this._parent.get_name()}}.addLayer({{this.get_name()}});
-            {% endmacro %}
-            """)
+        self.options = parse_options(**kwargs)
+        if icon_create_function is not None:
+            assert isinstance(icon_create_function, str)
+        self.icon_create_function = icon_create_function
 
     def render(self, **kwargs):
         super(MarkerCluster, self).render(**kwargs)

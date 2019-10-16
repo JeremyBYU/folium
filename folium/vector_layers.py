@@ -1,23 +1,19 @@
 # -*- coding: utf-8 -*-
 
 """
-Wraps leaflet Polyline, Polygon, Rectangle, Circlem and CircleMarker
+Wraps leaflet Polyline, Polygon, Rectangle, Circle, and CircleMarker
 
 """
 
-from __future__ import (absolute_import, division, print_function)
+from branca.element import MacroElement
 
-import json
-
-from branca.element import (CssLink, Element, Figure, JavascriptLink, MacroElement)  # noqa
-from branca.utilities import (_locations_tolist, _parse_size, image_to_url, iter_points, none_max, none_min)  # noqa
-
-from folium.map import Marker
+from folium.map import Marker, Popup, Tooltip
+from folium.utilities import validate_locations, get_bounds
 
 from jinja2 import Template
 
 
-def path_options(**kwargs):
+def path_options(line=False, radius=False, **kwargs):
     """
     Contains options and constants shared between vector overlays
     (Polygon, Polyline, Circle, CircleMarker, and Rectangle).
@@ -63,31 +59,18 @@ def path_options(**kwargs):
 
     Note that the presence of `fill_color` will override `fill=False`.
 
-
-    http://leafletjs.com/reference-1.2.0.html#path
+    See https://leafletjs.com/reference-1.5.1.html#path
 
     """
-    valid_options = (
-        'bubbling_mouse_events',
-        'color',
-        'dash_array',
-        'dash_offset',
-        'fill',
-        'fill_color',
-        'fill_opacity',
-        'fill_rule',
-        'line_cap',
-        'line_join',
-        'opacity',
-        'stroke',
-        'weight',
-    )
-    non_valid = [key for key in kwargs.keys() if key not in valid_options]
-    if non_valid:
-        raise ValueError(
-            '{non_valid} are not valid options, '
-            'expected {valid_options}'.format(non_valid=non_valid, valid_options=valid_options)
-        )
+
+    extra_options = {}
+    if line:
+        extra_options = {
+            'smoothFactor': kwargs.pop('smooth_factor', 1.0),
+            'noClip': kwargs.pop('no_clip', False),
+        }
+    if radius:
+        extra_options.update({'radius': radius})
 
     color = kwargs.pop('color', '#3388ff')
     fill_color = kwargs.pop('fill_color', False)
@@ -97,7 +80,7 @@ def path_options(**kwargs):
         fill_color = color
         fill = kwargs.pop('fill', False)
 
-    return {
+    default = {
         'stroke': kwargs.pop('stroke', True),
         'color': color,
         'weight': kwargs.pop('weight', 3),
@@ -112,25 +95,34 @@ def path_options(**kwargs):
         'fillRule': kwargs.pop('fill_rule', 'evenodd'),
         'bubblingMouseEvents': kwargs.pop('bubbling_mouse_events', True),
     }
+    default.update(extra_options)
+    return default
 
 
-def _parse_options(line=False, radius=False, **kwargs):
-    extra_options = {}
-    if line:
-        extra_options = {
-            'smoothFactor': kwargs.pop('smooth_factor', 1.0),
-            'noClip': kwargs.pop('no_clip', False),
-        }
-    if radius:
-        extra_options.update({'radius': radius})
-    options = path_options(**kwargs)
-    options.update(extra_options)
-    return json.dumps(options, sort_keys=True, indent=2)
+class BaseMultiLocation(MacroElement):
+    """Base class for vector classes with multiple coordinates.
 
+    Not for direct consumption
 
-class PolyLine(Marker):
     """
-    Class for drawing polyline overlays on a map.
+
+    def __init__(self, locations, popup=None, tooltip=None):
+        super(BaseMultiLocation, self).__init__()
+        self.locations = validate_locations(locations)
+        if popup is not None:
+            self.add_child(popup if isinstance(popup, Popup)
+                           else Popup(str(popup)))
+        if tooltip is not None:
+            self.add_child(tooltip if isinstance(tooltip, Tooltip)
+                           else Tooltip(str(tooltip)))
+
+    def _get_self_bounds(self):
+        """Compute the bounds of the object itself."""
+        return get_bounds(self.locations)
+
+
+class PolyLine(BaseMultiLocation):
+    """Draw polyline overlays on a map.
 
     See :func:`folium.vector_layers.path_options` for the `Path` options.
 
@@ -140,43 +132,37 @@ class PolyLine(Marker):
         Latitude and Longitude of line (Northing, Easting)
     popup: str or folium.Popup, default None
         Input text or visualization for object displayed when clicking.
-    tooltip: str, default None
-        Input text or visualization for object displayed when hovering.
+    tooltip: str or folium.Tooltip, default None
+        Display a text when hovering over the object.
     smooth_factor: float, default 1.0
         How much to simplify the polyline on each zoom level.
         More means better performance and smoother look,
         and less means more accurate representation.
     no_clip: Bool, default False
         Disable polyline clipping.
-
-
-    http://leafletjs.com/reference-1.2.0.html#polyline
+    **kwargs
+        Other valid (possibly inherited) options. See:
+        https://leafletjs.com/reference-1.5.1.html#polyline
 
     """
+
+    _template = Template(u"""
+        {% macro script(this, kwargs) %}
+            var {{ this.get_name() }} = L.polyline(
+                {{ this.locations|tojson }},
+                {{ this.options|tojson }}
+            ).addTo({{this._parent.get_name()}});
+        {% endmacro %}
+        """)
+
     def __init__(self, locations, popup=None, tooltip=None, **kwargs):
-        super(PolyLine, self).__init__(location=locations, popup=popup)
+        super(PolyLine, self).__init__(locations, popup=popup, tooltip=tooltip)
         self._name = 'PolyLine'
-        self.tooltip = tooltip
-
-        self.options = _parse_options(line=True, **kwargs)
-
-        self._template = Template(u"""
-            {% macro script(this, kwargs) %}
-                var {{this.get_name()}} = L.polyline(
-                    {{this.location}},
-                    {{ this.options }}
-                    )
-                    {% if this.tooltip %}.bindTooltip("{{this.tooltip.__str__()}}"){% endif %}
-                    .addTo({{this._parent.get_name()}});
-            {% endmacro %}
-            """)  # noqa
+        self.options = path_options(line=True, **kwargs)
 
 
-class Polygon(Marker):
-    """
-    Class for drawing polygon overlays on a map.
-
-    Extends :func:`folium.vector_layers.PolyLine`.
+class Polygon(BaseMultiLocation):
+    """Draw polygon overlays on a map.
 
     See :func:`folium.vector_layers.path_options` for the `Path` options.
 
@@ -186,118 +172,101 @@ class Polygon(Marker):
         Latitude and Longitude of line (Northing, Easting)
     popup: string or folium.Popup, default None
         Input text or visualization for object displayed when clicking.
-    tooltip: string , default None
-        Input text or visualization for object displayed when hovering.
-
-
-    http://leafletjs.com/reference-1.2.0.html#polygon
+    tooltip: str or folium.Tooltip, default None
+        Display a text when hovering over the object.
+    **kwargs
+        Other valid (possibly inherited) options. See:
+        https://leafletjs.com/reference-1.5.1.html#polygon
 
     """
+
+    _template = Template(u"""
+        {% macro script(this, kwargs) %}
+            var {{ this.get_name() }} = L.polygon(
+                {{ this.locations|tojson }},
+                {{ this.options|tojson }}
+            ).addTo({{this._parent.get_name()}});
+        {% endmacro %}
+        """)
+
     def __init__(self, locations, popup=None, tooltip=None, **kwargs):
-        super(Polygon, self).__init__(locations, popup=popup)
+        super(Polygon, self).__init__(locations, popup=popup, tooltip=tooltip)
         self._name = 'Polygon'
-        self.tooltip = tooltip
-
-        self.options = _parse_options(line=True, **kwargs)
-
-        self._template = Template(u"""
-            {% macro script(this, kwargs) %}
-
-            var {{this.get_name()}} = L.polygon(
-                {{this.location}},
-                {{ this.options }}
-                )
-                {% if this.tooltip %}.bindTooltip("{{this.tooltip.__str__()}}"){% endif %}
-                .addTo({{this._parent.get_name()}});
-            {% endmacro %}
-            """)
+        self.options = path_options(line=True, **kwargs)
 
 
-class Rectangle(Marker):
-    """
-    Class for drawing rectangle overlays on a map.
-
-    Extends :func:`folium.vector_layers.Polygon`.
+class Rectangle(BaseMultiLocation):
+    """Draw rectangle overlays on a map.
 
     See :func:`folium.vector_layers.path_options` for the `Path` options.
 
     Parameters
     ----------
-    locations: list of points (latitude, longitude)
+    bounds: list of points (latitude, longitude)
         Latitude and Longitude of line (Northing, Easting)
     popup: string or folium.Popup, default None
         Input text or visualization for object displayed when clicking.
-    tooltip: string , default None
-        Input text or visualization for object displayed when hovering.
-
-
-    http://leafletjs.com/reference-1.2.0.html#rectangle
+    tooltip: str or folium.Tooltip, default None
+        Display a text when hovering over the object.
+    **kwargs
+        Other valid (possibly inherited) options. See:
+        https://leafletjs.com/reference-1.5.1.html#rectangle
 
     """
-    def __init__(self, bounds, popup=None, tooltip=None, **kwargs):
-        super(Rectangle, self).__init__(location=bounds, popup=popup)
-        self._name = 'rectangle'
-        self.tooltip = tooltip
 
-        self.options = _parse_options(line=True, **kwargs)
-
-        self._template = Template(u"""
-            {% macro script(this, kwargs) %}
-
+    _template = Template(u"""
+        {% macro script(this, kwargs) %}
             var {{this.get_name()}} = L.rectangle(
-                {{this.location}},
-                {{ this.options }}
-                )
-                {% if this.tooltip %}.bindTooltip("{{this.tooltip.__str__()}}"){% endif %}
-                .addTo({{this._parent.get_name()}});
-            {% endmacro %}
-            """)
+                {{ this.locations|tojson }},
+                {{ this.options|tojson }}
+            ).addTo({{this._parent.get_name()}});
+        {% endmacro %}
+        """)
+
+    def __init__(self, bounds, popup=None, tooltip=None, **kwargs):
+        super(Rectangle, self).__init__(bounds, popup=popup, tooltip=tooltip)
+        self._name = 'rectangle'
+        self.options = path_options(line=True, **kwargs)
 
 
 class Circle(Marker):
     """
     Class for drawing circle overlays on a map.
 
-    It's an approximation and starts to diverge from a real circle closer to poles
-    (due to projection distortion).
-
-    Extends :func:`folium.vector_layers.CircleMarker`.
+    It's an approximation and starts to diverge from a real circle closer to
+    the poles (due to projection distortion).
 
     See :func:`folium.vector_layers.path_options` for the `Path` options.
 
     Parameters
     ----------
-    locations: list of points (latitude, longitude)
-        Latitude and Longitude of line (Northing, Easting)
+    location: tuple[float, float]
+        Latitude and Longitude pair (Northing, Easting)
     popup: string or folium.Popup, default None
         Input text or visualization for object displayed when clicking.
-    tooltip: string , default None
-        Input text or visualization for object displayed when hovering.
+    tooltip: str or folium.Tooltip, default None
+        Display a text when hovering over the object.
     radius: float
         Radius of the circle, in meters.
-
-
-    http://leafletjs.com/reference-1.2.0.html#circle
+    **kwargs
+        Other valid (possibly inherited) options. See:
+        https://leafletjs.com/reference-1.5.1.html#circle
 
     """
+
+    _template = Template(u"""
+        {% macro script(this, kwargs) %}
+            var {{ this.get_name() }} = L.circle(
+                {{ this.location|tojson }},
+                {{ this.options|tojson }}
+            ).addTo({{ this._parent.get_name() }});
+        {% endmacro %}
+        """)
+
     def __init__(self, location, radius, popup=None, tooltip=None, **kwargs):
-        super(Circle, self).__init__(location=location, popup=popup)
+        super(Circle, self).__init__(location, popup=popup, tooltip=tooltip)
         self._name = 'circle'
-        self.tooltip = tooltip
-
-        self.options = _parse_options(line=False, radius=radius, **kwargs)
-
-        self._template = Template(u"""
-            {% macro script(this, kwargs) %}
-
-            var {{this.get_name()}} = L.circle(
-                [{{this.location[0]}}, {{this.location[1]}}],
-                {{ this.options }}
-                )
-                {% if this.tooltip %}.bindTooltip("{{this.tooltip.__str__()}}"){% endif %}
-                .addTo({{this._parent.get_name()}});
-            {% endmacro %}
-            """)
+        self.options = path_options(line=False, radius=radius, **kwargs)
 
 
 class CircleMarker(Marker):
@@ -308,33 +277,31 @@ class CircleMarker(Marker):
 
     Parameters
     ----------
-    locations: list of points (latitude, longitude)
-        Latitude and Longitude of line (Northing, Easting)
+    location: tuple[float, float]
+        Latitude and Longitude pair (Northing, Easting)
     popup: string or folium.Popup, default None
         Input text or visualization for object displayed when clicking.
-    tooltip: string , default None
-        Input text or visualization for object displayed when hovering.
+    tooltip: str or folium.Tooltip, default None
+        Display a text when hovering over the object.
     radius: float, default 10
         Radius of the circle marker, in pixels.
-
-
-    http://leafletjs.com/reference-1.2.0.html#circlemarker
+    **kwargs
+        Other valid (possibly inherited) options. See:
+        https://leafletjs.com/reference-1.5.1.html#circlemarker
 
     """
+
+    _template = Template(u"""
+        {% macro script(this, kwargs) %}
+            var {{ this.get_name() }} = L.circleMarker(
+                {{ this.location|tojson }},
+                {{ this.options|tojson }}
+            ).addTo({{ this._parent.get_name() }});
+        {% endmacro %}
+        """)
+
     def __init__(self, location, radius=10, popup=None, tooltip=None, **kwargs):
-        super(CircleMarker, self).__init__(location=location, popup=popup)
+        super(CircleMarker, self).__init__(location, popup=popup,
+                                           tooltip=tooltip)
         self._name = 'CircleMarker'
-        self.tooltip = tooltip
-
-        self.options = _parse_options(line=False, radius=radius, **kwargs)
-
-        self._template = Template(u"""
-            {% macro script(this, kwargs) %}
-            var {{this.get_name()}} = L.circleMarker(
-                [{{this.location[0]}}, {{this.location[1]}}],
-                {{ this.options }}
-                )
-                {% if this.tooltip %}.bindTooltip("{{this.tooltip.__str__()}}"){% endif %}
-                .addTo({{this._parent.get_name()}});
-            {% endmacro %}
-            """)
+        self.options = path_options(line=False, radius=radius, **kwargs)
